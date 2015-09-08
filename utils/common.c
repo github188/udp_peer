@@ -178,6 +178,36 @@ int udp_sock_pton(char * net_addres, struct sockaddr *sa)
 
 }
 
+in_port_t udp_get_port(struct sockaddr *sa)
+{
+	if(NULL == sa)
+	{
+		dbg_printf("please check the param \n");
+		return(0);
+	}
+	switch(sa->sa_family)
+	{
+		case AF_INET:
+		{
+			struct sockaddr_in * sin = (struct sockaddr_in*)sa;
+			return(sin->sin_port);
+		}
+		case AF_INET6:
+		{
+			dbg_printf("AF_INET6 not support \n");
+			return(0);
+
+		}
+		default:
+		{
+			dbg_printf("unknow type \n");
+			return(0);
+		}
+	}
+	return(0);
+
+
+}
 
 int  udp_sock_cmp_addr(const struct sockaddr *sa1, const struct sockaddr *sa2)			 
 {
@@ -233,6 +263,10 @@ int udp_get_rand(int min, int max)
 }
 
 
+pthread_t udp_get_pid(void)
+{
+ 	return(pthread_self());
+}
 
 long udp_get_file_szie(FILE * fp)
 {
@@ -359,11 +393,11 @@ int udp_recvfrom(int socket_fd, void * data, int length, struct sockaddr *src_ad
 		return(-1);
 	}
 	int bytes = -1;
- 	size_t length = sizeof(struct sockaddr_in);
+ 	socklen_t length_sock = sizeof(struct sockaddr_in);
 
 	while(1)
 	{
-		bytes = recvfrom(socket_fd, data,length, 0, (struct sockaddr *)src_addr, &length);
+		bytes = recvfrom(socket_fd, data,length, 0, (struct sockaddr *)src_addr, &length_sock);
 		if(bytes < 0 )
 		{
 			if (errno == EINTR)continue;
@@ -402,6 +436,36 @@ int udp_getpeer_name(int sock_fd,struct sockaddr * peer)
 	}
 	return(0);
 }
+
+unsigned long udp_get_localaddres(const unsigned char * net_face)
+{
+	int fd_socket;
+	int ret = -1;
+	if(NULL == net_face)
+	{
+		dbg_printf("check the param \n");
+		return(0);
+	}
+    if((fd_socket=socket(AF_INET, SOCK_STREAM, 0)) == -1)
+    {
+        dbg_printf("socket fail \n");
+        return (0);
+    }
+    struct ifreq ifr_ip;
+    memset(&ifr_ip, 0, sizeof(ifr_ip));
+    strncpy(ifr_ip.ifr_name, net_face, sizeof(ifr_ip.ifr_name) - 1);
+    if(ioctl(fd_socket, SIOCGIFADDR, &ifr_ip) < 0)
+    {
+        dbg_printf("ioctl fail \n");
+        return (0);
+    }
+    struct sockaddr_in *sin;
+    sin = (struct sockaddr_in *)&ifr_ip.ifr_addr;
+    close(fd_socket);
+    return sin->sin_addr.s_addr;
+
+}
+	
 
 
 	
