@@ -15,14 +15,7 @@
 #define	MSG_MAX_NUM		(1024)
 #define	NET_INTERFACE	"eth0"
 
-typedef struct server_session
-{
-	int server_socket_fd;
-	struct sockaddr_in	servaddr;
-	server_pthread_msg_t * recv_msg;
-	server_pthread_msg_t * send_msg;
-	
-}server_session_t;
+
 
 
 static  server_session_t * session_server = NULL;
@@ -45,8 +38,8 @@ int session_server_init(void)
 		return(-2);
 	}
 
-	session_server->server_socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if(session_server->server_socket_fd < 0)
+	session_server->socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if(session_server->socket_fd < 0)
 	{
 		dbg_printf("socket fail \n");
 		goto fail;
@@ -57,39 +50,31 @@ int session_server_init(void)
 	session_server->servaddr.sin_addr.s_addr = udp_get_localaddres(NET_INTERFACE);
 	session_server->servaddr.sin_port        = htons(SERVER_PORT);
 
-	setsockopt(session_server->server_socket_fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
-	setsockopt(session_server->server_socket_fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
-	ret = bind(session_server->server_socket_fd, (struct sockaddr *) &session_server->servaddr, sizeof(struct sockaddr));
+	setsockopt(session_server->socket_fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+	setsockopt(session_server->socket_fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
+	ret = bind(session_server->socket_fd, (struct sockaddr *) &session_server->servaddr, sizeof(struct sockaddr));
 	if(ret != 0 )
 	{
 		dbg_printf("bing fail \n");
 		goto fail;
 	}
 
-	session_server->recv_msg = servermsg_new(MSG_MAX_NUM);
-	if(NULL == session_server->recv_msg)
+	session_server->msg_pool = servermsg_new(MSG_MAX_NUM);
+	if(NULL == session_server->msg_pool)
 	{
 		dbg_printf("servermsg_new fail \n");
 		goto fail;
 	}
 
-	session_server->send_msg = servermsg_new(MSG_MAX_NUM);
-	if(NULL == session_server->send_msg)
-	{
-		dbg_printf("servermsg_new fail \n");
-		goto fail;
-	}
-
-	
 	return(0);
 
 fail:
 
 
 
-	if(session_server->server_socket_fd > 0)
+	if(session_server->socket_fd  > 0)
 	{
-		udp_shutdown_socket(session_server->server_socket_fd,SHUTDOWN_READ_WRITE);
+		udp_shutdown_socket(session_server->socket_fd,SHUTDOWN_READ_WRITE);
 	}
 
 	if(NULL != session_server)
@@ -101,110 +86,151 @@ fail:
 }
 
 
+int servermsg_handle_login(server_session_t * session,void * data)
+{
+	if(NULL == session || NULL == data)
+	{
+		dbg_printf("check the param \n");
+		return(-1);
+	}
+	msg_header_t * msg = (msg_header_t *)data;
 
-static void* recvmsg_pthread_loop(void *arg)
+	char * pip_str = udp_sock_ntop(&msg->src_addr);
+	dbg_printf("receive data from %s  port: %d \n",pip_str,ntohs(udp_get_port(&msg->src_addr)));
+	if(NULL != pip_str)free(pip_str);	
+
+	msg_header_t * ask_msg = calloc(1,sizeof(msg_header_t));
+	if(NULL != ask_msg)
+	{
+		ask_msg->type = LOGIN_ASK_MSG;
+		memmove(&ask_msg->dst_addr,&msg->src_addr,sizeof(struct sockaddr));
+		servermsg_add_send_msg(session->msg_pool,ask_msg);
+	}
+
+	free(data);
+	data = NULL;
+
+
+	return(0);
+
+}
+
+int servermsg_handle_login_ask(server_session_t * session,void * data)
+{
+	if(NULL == session || NULL == data)
+	{
+		dbg_printf("check the param \n");
+		return(-1);
+	}
+	msg_header_t * msg = (msg_header_t *)data;
+	sendto(session->socket_fd, msg, sizeof(msg_header_t), 0, &msg->dst_addr, sizeof(struct sockaddr));
+
+	free(data);
+	data = NULL;
+	
+
+
+
+
+	return(0);
+
+}
+
+
+static handle_msg_fun_t  servermsg_fun[]=\
+{
+	{LOGIN_MSG,servermsg_handle_login},
+	{LOGIN_ASK_MSG,servermsg_handle_login_ask},
+};
+
+
+
+static void* handleserver_msg_pool_loop(void *arg)
 {
 
 	int ret = -1;
+	int i = 0;
 	void * task = NULL;
 	server_session_t * server = (server_session_t *)arg;
-	if(NULL == server || NULL == server->recv_msg)
+	if(NULL == server || NULL == server->msg_pool)
 	{
 		dbg_printf("check the param \n");
 		return(NULL);
 	}
     while (1)
     {
-        pthread_mutex_lock(&(server->recv_msg->mutex));
+        pthread_mutex_lock(&(server->msg_pool->mutex));
  
-        while (0 == server->recv_msg->task_num)
+        while ((0 == server->msg_pool->handle_msg_num)&&(0 == server->msg_pool->send_msg_num)&&(0 == server->msg_pool->resend_msg_num))
         {
-            pthread_cond_wait(&(server->recv_msg->cond), &(server->recv_msg->mutex));
+            pthread_cond_wait(&(server->msg_pool->cond), &(server->msg_pool->mutex));
         }
 
-        ret = ring_queue_pop(&(server->recv_msg->queue), &task);
-        pthread_mutex_unlock(&(server->recv_msg->mutex));
-        if (ret  != 0)continue;
+		if(0 != server->msg_pool->resend_msg_num)
+		{
 
-        dbg_printf("thread [%ld] is starting to work\n", udp_get_pid());
+			ret = ring_queue_pop(&(server->msg_pool->resend_msg_queue), &task);
+			pthread_mutex_unlock(&(server->msg_pool->mutex));
+			if(ret != 0)continue;
+
+			
+			
+	        volatile unsigned int *resend_num = &(server->msg_pool->resend_msg_num);
+    		fetch_and_sub(resend_num, 1);  
+
+			
+		}
+		else if(0 != server->msg_pool->handle_msg_num)
+		{
+
+			ret = ring_queue_pop(&(server->msg_pool->handle_msg_queue), &task);
+			pthread_mutex_unlock(&(server->msg_pool->mutex));
+			if(ret != 0)continue;
+						
+	        volatile unsigned int *handle_num = &(server->msg_pool->handle_msg_num);
+    		fetch_and_sub(handle_num, 1);  
+
+		}
+		else if(0 != server->msg_pool->send_msg_num)
+		{
+
+			ret = ring_queue_pop(&(server->msg_pool->send_msg_queue), &task);
+			pthread_mutex_unlock(&(server->msg_pool->mutex));
+			if(ret != 0)continue;
+			
+	        volatile unsigned int *send_num = &(server->msg_pool->send_msg_num);
+    		fetch_and_sub(send_num, 1);  
+		}
+		else
+		{
+			pthread_mutex_unlock(&(server->msg_pool->mutex));
+			continue;
+
+		}
 
 		
-        volatile unsigned int *task_num = &(server->recv_msg->task_num);
-        fetch_and_sub(task_num, 1);  
 		if(NULL != task)
 		{
 			msg_header_t * msg = (msg_header_t *)task;
-			if(LOGIN_MSG == msg->type)
+			int find_fun  = 0;
+			for(i=0;i<sizeof(servermsg_fun)/sizeof(servermsg_fun[0]);++i)
 			{
-				char * pip_str = udp_sock_ntop(&msg->src_addr);
-				dbg_printf("receive data from %s  port: %d \n",pip_str,ntohs(udp_get_port(&msg->src_addr)));
-				if(NULL != pip_str)free(pip_str);	
-
-				msg_header_t * ask_msg = calloc(1,sizeof(msg_header_t));
-				if(NULL != ask_msg)
+				if(msg->type == servermsg_fun[i].type)
 				{
-					ask_msg->type = LOGIN_ASK_MSG;
-					memmove(&ask_msg->dst_addr,&msg->src_addr,sizeof(struct sockaddr));
-					servermsg_add(session_server->send_msg,ask_msg);
+					find_fun = 1;
+					servermsg_fun[i].handle(server,msg);
+					break;
 				}
-
-				
-
 			}
-			
-			free(task);
-			task = NULL;
+
+			if(0 == find_fun)
+			{
+				free(task);
+				task = NULL;
+			}
 
 		}
-		
-    }
-
-    pthread_exit(NULL);
-    return NULL;
-}
-
-
-/*建立一条重发队列，要重发的数据放置在该队列中，而该函数每次都要检测是否有需要重发的数据，如果有，则有限响应该队列*/
-static void* sendmsg_pthread_loop(void *arg)
-{
-
-	int ret = -1;
-	void * task = NULL;
-	server_session_t * server = (server_session_t *)arg;
-	if(NULL == server || NULL == server->send_msg)
-	{
-		dbg_printf("check the param \n");
-		return(NULL);
-	}
-    while (1)
-    {
-        pthread_mutex_lock(&(server->send_msg->mutex));
- 
-        while (0 == server->send_msg->task_num)
-        {
-            pthread_cond_wait(&(server->send_msg->cond), &(server->send_msg->mutex));
-        }
-
-        ret = ring_queue_pop(&(server->send_msg->queue), &task);
-        pthread_mutex_unlock(&(server->send_msg->mutex));
-        if (ret  != 0)continue;
-
-        dbg_printf("send thread [%ld] is starting to work\n", udp_get_pid());
-
-		
-        volatile unsigned int *task_num = &(server->send_msg->task_num);
-        fetch_and_sub(task_num, 1);  
-		if(NULL != task)
-		{
-			msg_header_t * msg = (msg_header_t * )task;
-			sendto(server->server_socket_fd, msg, sizeof(msg_header_t), 0, &(msg->dst_addr),sizeof(struct sockaddr));
-
-			
-			free(task);
-			task = NULL;
-
-		}
-		
+	
     }
 
     pthread_exit(NULL);
@@ -213,8 +239,7 @@ static void* sendmsg_pthread_loop(void *arg)
 
 
 
-
-void dg_echo(int sockfd, struct sockaddr *pcliaddr, socklen_t clilen)
+void udp_recv_message(int sockfd, struct sockaddr *pcliaddr, socklen_t clilen)
 {
 	int			n;
 	socklen_t	len;
@@ -225,21 +250,14 @@ void dg_echo(int sockfd, struct sockaddr *pcliaddr, socklen_t clilen)
 		len = clilen;
 		n = recvfrom(sockfd, mesg, MAXLINE, 0, pcliaddr, &len);
 		if(n <= 0 )continue;
+		if(n < sizeof(msg_header_t))continue;
 		
 		void * data = calloc(1,sizeof(unsigned char)*(n+1));
 		if(NULL == data)continue;
-		if(n < sizeof(msg_header_t))continue;
+		
 		
 		memmove(data,mesg,n);
-		servermsg_add(session_server->recv_msg,data);
-		
-		
-		#if 0
-		char * pip_str = udp_sock_ntop(pcliaddr);
-		dbg_printf("receive data from %s  port: %d \n",pip_str,ntohs(udp_get_port(pcliaddr)));
-		if(NULL != pip_str)free(pip_str);
-		sendto(sockfd, mesg, n, 0, pcliaddr, len);
-		#endif
+		servermsg_add_handle_msg(session_server->msg_pool, data);
 
 	}
 }
@@ -257,11 +275,9 @@ int main(int argc, char **argv)
 		return(-1);
 	}
 
-	pthread_t recvmsg_id;
-	pthread_t sendmsg_id;
-	pthread_create(&recvmsg_id, NULL, recvmsg_pthread_loop, session_server);
-	pthread_create(&sendmsg_id, NULL, sendmsg_pthread_loop, session_server);
-	dg_echo(session_server->server_socket_fd, (struct sockaddr *) &cliaddr, sizeof(cliaddr));
+	pthread_t msg_pool_id;
+	pthread_create(&msg_pool_id, NULL, handleserver_msg_pool_loop, session_server);
+	udp_recv_message(session_server->socket_fd, (struct sockaddr *) &cliaddr, sizeof(cliaddr));
 }
 
 
