@@ -93,17 +93,18 @@ int servermsg_handle_login(server_session_t * session,void * data)
 		dbg_printf("check the param \n");
 		return(-1);
 	}
-	msg_header_t * msg = (msg_header_t *)data;
+	msg_data_t * msg = (msg_data_t *)data;
 
 	char * pip_str = udp_sock_ntop(&msg->src_addr);
 	dbg_printf("receive data from %s  port: %d \n",pip_str,ntohs(udp_get_port(&msg->src_addr)));
 	if(NULL != pip_str)free(pip_str);	
 
-	msg_header_t * ask_msg = calloc(1,sizeof(msg_header_t));
+	msg_data_t * ask_msg = calloc(1,sizeof(msg_data_t));
 	if(NULL != ask_msg)
 	{
 		ask_msg->type = LOGIN_ASK_MSG;
 		memmove(&ask_msg->dst_addr,&msg->src_addr,sizeof(struct sockaddr));
+		ask_msg->time_stamp_end = msg->time_stamp_end;
 		servermsg_add_send_msg(session->msg_pool,ask_msg);
 	}
 
@@ -122,14 +123,12 @@ int servermsg_handle_login_ask(server_session_t * session,void * data)
 		dbg_printf("check the param \n");
 		return(-1);
 	}
-	msg_header_t * msg = (msg_header_t *)data;
-	sendto(session->socket_fd, msg, sizeof(msg_header_t), 0, &msg->dst_addr, sizeof(struct sockaddr));
+	msg_data_t * msg = (msg_data_t *)data;
+	sendto(session->socket_fd, msg, sizeof(msg_data_t), 0, &msg->dst_addr, sizeof(struct sockaddr));
 
 	free(data);
 	data = NULL;
 	
-
-
 
 
 	return(0);
@@ -211,7 +210,7 @@ static void* handleserver_msg_pool_loop(void *arg)
 		
 		if(NULL != task)
 		{
-			msg_header_t * msg = (msg_header_t *)task;
+			msg_data_t * msg = (msg_data_t *)task;
 			int find_fun  = 0;
 			for(i=0;i<sizeof(servermsg_fun)/sizeof(servermsg_fun[0]);++i)
 			{
@@ -250,7 +249,7 @@ void udp_recv_message(int sockfd, struct sockaddr *pcliaddr, socklen_t clilen)
 		len = clilen;
 		n = recvfrom(sockfd, mesg, MAXLINE, 0, pcliaddr, &len);
 		if(n <= 0 )continue;
-		if(n < sizeof(msg_header_t))continue;
+		if(n < sizeof(msg_data_t))continue;
 		
 		void * data = calloc(1,sizeof(unsigned char)*(n+1));
 		if(NULL == data)continue;

@@ -469,6 +469,80 @@ unsigned long udp_get_localaddres(const unsigned char * net_face)
 
 
 	
+unsigned long  udp_get_curtime(void)
+{
+
+	struct timeval time_value;
+	int ret = -1;
+	ret = gettimeofday(&time_value,NULL);
+	if(ret < 0 )
+	{
+		dbg_printf("get time fail \n");
+		return(0);
+	}
+	return(time_value.tv_sec * 1000 + time_value.tv_usec / 1000);
+}
+
+
+int udp_read_timeout(int fd,unsigned int mssec)
+{
+	if(fd < 0)
+	{
+		dbg_printf("please check the socket\n");
+		return(-1);
+	}
+	fd_set			rset;
+	struct timeval	tv;
+	FD_ZERO(&rset);
+	FD_SET(fd, &rset);
+	tv.tv_sec = 0;
+	tv.tv_usec = mssec * 1000;
+	return(select(fd+1, &rset, NULL, NULL, &tv));
+ 
+}
+
+
+
+int udp_fcntl_set_block(int sock,int nonblock)
+{
+
+	int value;
+	int ret = -1;
+	do
+	{
+		value = fcntl(sock,F_GETFL);
+	}while(value<0 && errno==EINTR);
+
+	if(value < 0)
+	{
+		dbg_printf("this is wrong to get \n");
+		return (-1);
+	}
+
+    if (nonblock)
+    {
+        value = value | O_NONBLOCK;
+    }
+    else
+    {
+        value = value & ~O_NONBLOCK;
+    }
+
+	do
+	{
+		ret = fcntl(sock,F_SETFL,value);
+		
+	}while(ret <0 && errno==EINTR );
+
+	if(ret <0)
+	{
+		dbg_printf("set the fanctl fail\n");
+		return(-2);
+	}
+	return(0);
+
+
+}
 
 
 

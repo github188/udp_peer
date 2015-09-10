@@ -1,6 +1,9 @@
 #include "common.h"
 #include "udp_basemsg.h"
 #include "udp_servermsg.h"
+#include "udp_rto.h"
+#include "udp_packets.h"
+#include "udp_wakeup.h"
 
 #undef	DBG_ON
 #undef	FILE_NAME	
@@ -14,6 +17,9 @@
 #define	NET_INTERFACE	"eth0"
 
 #define	MSG_MAX_NUM		(1024)
+
+
+static  rto_info_t * rtoinfo = NULL;
 
 
 static  server_session_t * session_client = NULL;
@@ -58,7 +64,7 @@ int session_client_init( char * server_addres)
 
 	setsockopt(session_client->socket_fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
 	setsockopt(session_client->socket_fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
-
+	udp_fcntl_set_block(session_client->socket_fd,1);
 
 	bzero(&clisent_addr, sizeof(clisent_addr));
 	clisent_addr.sin_family = AF_INET;
@@ -78,6 +84,21 @@ int session_client_init( char * server_addres)
 	{
 		dbg_printf("servermsg_new fail \n");
 		goto fail;
+	}
+
+	session_client->wakeup_fd = udp_wakeup_new();
+	if(session_client->wakeup_fd < 0)
+	{
+		dbg_printf("udp_wakeup_new is fai \n");
+		goto fail;
+	}
+
+	session_client->reliable_queue = udp_packets_new();
+	if(NULL == session_client->reliable_queue)
+	{
+		dbg_printf("udp_packets_new fail \n");
+		goto fail;
+
 	}
 
 	return(0);
@@ -100,18 +121,104 @@ fail:
 }
 
 
+msg_data_t * client_creat_packet(packet_list_t * list,msg_type_t type,char is_reliable,void * data,unsigned length)
+{
+	if(0 == is_reliable )
+	{
+		msg_data_t * msgdata = (msg_data_t * )calloc(1,sizeof(msg_data_t));
+		msgdata->type = type;
+		msgdata->data_length = length;
+		msgdata->is_reliable = is_reliable;
+		memmove(&(msgdata->src_addr),&clisent_addr,sizeof(struct sockaddr_in));
+		if(NULL != data  && length != 0)
+		{
+			msgdata->data = calloc(1,length+1);
+			memmove(msgdata->data,data,length);
+		}
+		return(msgdata);
+	}
+	else
+	{
+
+		if(NULL == list)
+		{
+			return(NULL);
+		}
+		reliable_packet_t * packet = calloc(1,sizeof(reliable_packet_t));
+		packet->msg.type = type;
+		packet->msg.data_length = length;
+		packet->msg.is_reliable =is_reliable; 
+		memmove(&(packet->msg.src_addr),&clisent_addr,sizeof(struct sockaddr_in));
+		if(NULL != data && length != 0)
+		{
+			packet->msg.data = calloc(1,length+1);
+			memmove(packet->msg.data,data,length);
+		}
+
+		packet_node_t * node_packet = calloc(1,sizeof(packet_node_t));
+		if(NULL == node_packet)
+		{
+			dbg_printf("calloc is null \n");
+			free(packet);
+			packet = NULL;
+			return(NULL);
+		}
+		node_packet->packet = packet;
+		udp_push_packets(list,node_packet);
+		
+		return(&packet->msg);
+	}
+	return(NULL);
+
+}
+
+
+
 int clientmsg_handle_login(server_session_t * session,void * data)
 {
+
+
 	if(NULL == session || NULL == data)
 	{
 		dbg_printf("check the param \n");
 		return(-1);
 	}
-	write(session->socket_fd, data, sizeof(msg_header_t));
 
-	free(data);
-	data = NULL;
+	char temp_data[1440];
+	int byte_lenrth = 0;
+	msg_data_t * msgdata = (msg_data_t * )data;
+	msgdata->time_stamp = udp_get_curtime();
+	if(msgdata->is_reliable)
+	{
+		reliable_packet_t * reliable = 	container_of(msgdata,reliable_packet_t,msg);
+		reliable->retry_times = 0;
+		reliable->time_stamp_end = msgdata->time_stamp +rtoinfo->rtto;
+	}
 
+	memmove(temp_data,msgdata,sizeof(msg_data_t));
+	
+	if(msgdata->data_length)
+	{
+		memmove(&temp_data[sizeof(msg_data_t)],msgdata->data,msgdata->data_length);	
+	}
+	byte_lenrth = sizeof(msg_data_t) + msgdata->data_length;
+	write(session->socket_fd, temp_data, byte_lenrth);
+
+	if(0 == msgdata->is_reliable)
+	{
+		if( NULL != msgdata->data)
+		{
+			free(msgdata->data);
+			msgdata->data = NULL;
+		}
+
+		if(NULL != msgdata)
+		{
+			free(msgdata);
+			msgdata = NULL;
+			
+		}
+	}
 
 	return(0);
 
@@ -124,24 +231,34 @@ int clientmsg_handle_login_ask(server_session_t * session,void * data)
 		dbg_printf("check the param \n");
 		return(-1);
 	}
-	msg_header_t * msg = (msg_header_t *)data;
+	msg_data_t * msg = (msg_data_t *)data;
 	if(LOGIN_ASK_MSG == msg->type)
 	{
-		dbg_printf("recv the ask \n");
-		
+		dbg_printf("recv the ask ,msg->time_stamp ===  %ld \n",msg->time_stamp);
+	}
+
+	if(1 == msg->is_reliable)
+	{
+		udp_find_and_delpackets(session->reliable_queue,msg->time_stamp);
 	}
 
 	free(data);
 	data = NULL;
+	
 
-	msg_header_t * login_msg = NULL;
-	login_msg = calloc(1,sizeof(msg_header_t));
+
+
+
+
+#if 0
+	msg_data_t * login_msg = NULL;
+	login_msg = calloc(1,sizeof(msg_data_t));
 	if(NULL == login_msg)return;
 
 	login_msg->type = LOGIN_MSG;
 	memmove(&(login_msg->src_addr),&clisent_addr,sizeof(struct sockaddr_in));
 	servermsg_add_send_msg(session_client->msg_pool,login_msg);
-	
+#endif
 	
 
 	return(0);
@@ -223,7 +340,7 @@ static void* handleclient_msg_pool_loop(void *arg)
 		
 		if(NULL != task)
 		{
-			msg_header_t * msg = (msg_header_t *)task;
+			msg_data_t * msg = (msg_data_t *)task;
 			int find_fun  = 0;
 			for(i=0;i<sizeof(clientmsg_fun)/sizeof(clientmsg_fun[0]);++i)
 			{
@@ -254,36 +371,95 @@ static void* handleclient_msg_pool_loop(void *arg)
 
 
 
+/*
+思路:增加一个abort pipe，来激活select中的休眠，每次休眠完毕之后，如果暂时不需要再接收数据，设置很长的休眠时间 或者设置为-1，如果需要收数据时候，再重新设置
 
-void udp_client_run( int sockfd, const struct sockaddr *pservaddr, socklen_t servlen)
+
+*/
+void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr, socklen_t servlen)
 {
 	int		n;
+	int ret = -1;
 	char	sendline[MAXLINE], recvline[MAXLINE + 1];
-	msg_header_t * login_msg = NULL;
-	login_msg = calloc(1,sizeof(msg_header_t));
-	if(NULL == login_msg)return;
+	volatile unsigned int rto_time_out = 0;
 
-	login_msg->type = LOGIN_MSG;
-	memmove(&(login_msg->src_addr),&clisent_addr,sizeof(struct sockaddr_in));
-	servermsg_add_send_msg(session_client->msg_pool,login_msg);
+	if(NULL == client)
+	{
+		dbg_printf("check the param \n");
+		return;
+	}
 
+	rto_init(rtoinfo);
+	rto_reget_rtovalue(rtoinfo,0);
+
+
+	msg_data_t * login_msg = client_creat_packet(client->reliable_queue,LOGIN_MSG,1,NULL,0);
+	if(NULL != login_msg)
+	{
+		servermsg_add_send_msg(session_client->msg_pool,login_msg);
+	}
+	
+	int maxfd = (client->socket_fd > client->wakeup_fd) ? (client->socket_fd) : (client->wakeup_fd);
 	while(1)
 	{
 
-		n = read(sockfd, recvline, MAXLINE);
-		if(n < sizeof(msg_header_t))continue;
+		fd_set			rset;
+		struct timeval	tv;
+		FD_ZERO(&rset);
+		FD_SET(client->socket_fd, &rset);
+		FD_SET(client->wakeup_fd, &rset);
+
+
+		if(0 == rtoinfo->rtto)
+		{
+			ret = select(maxfd+1, &rset, NULL, NULL,NULL);
+		}
+		else
+		{
+			tv.tv_sec = 0;
+			tv.tv_usec = rtoinfo->rtto * 1000;
+			ret = select(maxfd+1, &rset, NULL, NULL, &tv);
+		}
+		rtoinfo->rtto= 0;  /*暂时*/
+
+		if(-1 == ret)
+		{
+			if (errno == EINTR)continue;
+			else
+			{
+				dbg_printf("come out \n");
+			}	
+		}
+		else if(0 == ret )
+		{
+			dbg_printf("read time out \n");
+			continue;
+		}
+
+		if(FD_ISSET(client->wakeup_fd,&rset))continue;
 		
-		msg_header_t * msg = (msg_header_t *)recvline;
+
+
+		n = read(client->socket_fd, recvline, MAXLINE);
+		if(n < sizeof(msg_data_t))
+		{
+			dbg_printf("read time out \n");
+			continue;
+		}
+
+
+
+		msg_data_t * msg = (msg_data_t *)recvline;
+		msg->time_stamp = udp_get_curtime();
 		if(LOGIN_ASK_MSG == msg->type)
 		{
-			msg_header_t * msg_recv = calloc(1,sizeof(unsigned char)*(n+1));
+			msg_data_t * msg_recv = calloc(1,sizeof(unsigned char)*(n+1));
 			memmove(msg_recv,recvline,n);
 			servermsg_add_handle_msg(session_client->msg_pool,msg_recv);
 			
 		}
 
-	
-		sleep(1);
+
 	}
 
 }
@@ -293,16 +469,23 @@ void udp_client_run( int sockfd, const struct sockaddr *pservaddr, socklen_t ser
 
 int main(int argc, char **argv)
 {
-	int					sockfd;
+
 	struct sockaddr_in	servaddr;
 
 	if (argc != 2)
 		dbg_printf("usage: udpcli <IPaddress>\n");
 
 	session_client_init(argv[1]);
+	rtoinfo = rto_new();
+	if(NULL == rtoinfo)
+	{
+		dbg_printf("rto_new fail \n");
+		return(-1);
+	}
+
 	pthread_t clientmsg_pool_id;
 	pthread_create(&clientmsg_pool_id, NULL, handleclient_msg_pool_loop, session_client);
-	udp_client_run(session_client->socket_fd, (struct  sockaddr *) &session_client->servaddr, sizeof(servaddr));
+	udp_client_run(session_client, (struct  sockaddr *) &session_client->servaddr, sizeof(servaddr));
 
 	exit(0);
 }
