@@ -8,13 +8,11 @@
 
 
 
-#define	MAX_RTO_VALUE	(2*1000)
-#define	DEFAULT_RTO_VALUE	(1*1000)
-#define	MIN_RTO_VALUE	(4) 
 
 
 rto_info_t * rto_new(void)
 {
+	int i = 0;
 	rto_info_t * rto_temp = NULL;
 	rto_temp = calloc(1,sizeof(rto_info_t));
 	if(NULL == rto_temp)
@@ -22,52 +20,56 @@ rto_info_t * rto_new(void)
 		dbg_printf("check the param \n");
 		return(NULL);
 	}
-	rto_temp->rttm = MAX_RTO_VALUE;
-	rto_temp->rttd =  rto_temp->rttm / 2;
+
+	for(i=0;i<SAMPLE_NUM; ++ i)
+	{
+		rto_temp->sample_data[i] = DEFAULT_RTO_VALUE;
+	}
+
+	rto_temp->index = 0;
+	
 	return(rto_temp);
 
 }
 
 
-int rto_init(rto_info_t * rto_info)
+int rto_push_sample_data(rto_info_t * info,unsigned int data)
 {
-	if(NULL == rto_info)
+	if(NULL == info)
 	{
-		dbg_printf("rto_init fail \n");
+		dbg_printf("this is null \n");
 		return(-1);
 	}
-	rto_info->rttm = MAX_RTO_VALUE;
-	rto_info->rttd =  rto_info->rttm / 2;
-
+	info->sample_data[info->index] = data;
+	info->index = (info->index+1)%(SAMPLE_NUM+1);
 	return(0);
 }
 
 
-int  rto_reget_rtovalue(rto_info_t * rto_info,unsigned int rttm_value)
+unsigned int rto_get(rto_info_t * info)
 {
-
-	unsigned int diff_value = 0;
-	volatile unsigned int rto = 0;
-	if(NULL == rto_info)
+	int i = 0;
+	unsigned int sum = 0;
+	if(NULL == info)
 	{
-		dbg_printf("check the  param \n");
-		return(-1);
+		dbg_printf("check the param \n");
+		return(DEFAULT_RTO_VALUE);
 	}
 
-	rto_info->rttm = rttm_value;
-	if(rto_info->rttm > rto_info->rtts)
+	for(i=0;i<SAMPLE_NUM;++i)
 	{
-		diff_value = rto_info->rttm-rto_info->rtts;
+		sum += info->sample_data[i];
 	}
-	else
-	{
-		diff_value = rto_info->rtts - rto_info->rttm;
-	}
-	rto_info->rtts = (unsigned int)((1-1/8)*rto_info->rtts + (1/8) * rto_info->rttm);
-	rto_info->rttd = (unsigned int)((1-1/4)*rto_info->rttd + (1/4) * diff_value);
-	rto_info->rtto = rto_info->rtts + 4 * rto_info->rttd;
-	return(0);
+
+	return((unsigned int)(sum/SAMPLE_NUM));
 }
+
+
+
+
+
+
+
 
 
 

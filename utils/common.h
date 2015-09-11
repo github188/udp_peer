@@ -35,6 +35,7 @@
 #include	<sys/ioctl.h>
 #include	<pthread.h>
 #include 	<sys/resource.h>
+#include 	<sys/eventfd.h>
 
 #undef TRUE
 #undef FALSE
@@ -76,6 +77,6 @@ unsigned long udp_get_localaddres(const unsigned char * net_face);
 unsigned long  udp_get_curtime(void);
 int udp_read_timeout(int fd,unsigned int mssec);
 int udp_fcntl_set_block(int sock,int nonblock);
-
+unsigned long udp_get_packet_index(unsigned long * value);
 
 #endif /*_COMMON_H*/

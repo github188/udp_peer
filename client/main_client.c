@@ -22,8 +22,9 @@
 static  rto_info_t * rtoinfo = NULL;
 
 
-static  server_session_t * session_client = NULL;
 
+static  server_session_t * session_client = NULL;
+volatile unsigned int rto_time_out = DEFAULT_RTO_VALUE;
 struct sockaddr_in	clisent_addr;
 
 int session_client_init( char * server_addres)
@@ -93,6 +94,7 @@ int session_client_init( char * server_addres)
 		goto fail;
 	}
 
+
 	session_client->reliable_queue = udp_packets_new();
 	if(NULL == session_client->reliable_queue)
 	{
@@ -100,6 +102,8 @@ int session_client_init( char * server_addres)
 		goto fail;
 
 	}
+
+	session_client->packets_index = 0;
 
 	return(0);
 
@@ -187,12 +191,14 @@ int clientmsg_handle_login(server_session_t * session,void * data)
 	char temp_data[1440];
 	int byte_lenrth = 0;
 	msg_data_t * msgdata = (msg_data_t * )data;
-	msgdata->time_stamp = udp_get_curtime();
+	
+	msgdata->packer_index = udp_get_packet_index(&session->packets_index);
 	if(msgdata->is_reliable)
 	{
 		reliable_packet_t * reliable = 	container_of(msgdata,reliable_packet_t,msg);
 		reliable->retry_times = 0;
-		reliable->time_stamp_end = msgdata->time_stamp +rtoinfo->rtto;
+		reliable->time_stamp_start = udp_get_curtime();
+		reliable->time_stamp_end = reliable->time_stamp_start +rto_get(rtoinfo);
 	}
 
 	memmove(temp_data,msgdata,sizeof(msg_data_t));
@@ -203,6 +209,13 @@ int clientmsg_handle_login(server_session_t * session,void * data)
 	}
 	byte_lenrth = sizeof(msg_data_t) + msgdata->data_length;
 	write(session->socket_fd, temp_data, byte_lenrth);
+
+	if(0 == rto_time_out)
+	{
+		udp_wakeup_send(session->wakeup_fd);
+	}
+	
+	
 
 	if(0 == msgdata->is_reliable)
 	{
@@ -234,12 +247,7 @@ int clientmsg_handle_login_ask(server_session_t * session,void * data)
 	msg_data_t * msg = (msg_data_t *)data;
 	if(LOGIN_ASK_MSG == msg->type)
 	{
-		dbg_printf("recv the ask ,msg->time_stamp ===  %ld \n",msg->time_stamp);
-	}
-
-	if(1 == msg->is_reliable)
-	{
-		udp_find_and_delpackets(session->reliable_queue,msg->time_stamp);
+		dbg_printf("recv the ask ,msg->time_stamp ===  %ld \n",msg->packer_index);
 	}
 
 	free(data);
@@ -247,18 +255,11 @@ int clientmsg_handle_login_ask(server_session_t * session,void * data)
 	
 
 
-
-
-
-#if 0
-	msg_data_t * login_msg = NULL;
-	login_msg = calloc(1,sizeof(msg_data_t));
-	if(NULL == login_msg)return;
-
-	login_msg->type = LOGIN_MSG;
-	memmove(&(login_msg->src_addr),&clisent_addr,sizeof(struct sockaddr_in));
-	servermsg_add_send_msg(session_client->msg_pool,login_msg);
-#endif
+	msg_data_t * login_msg = client_creat_packet(session->reliable_queue,LOGIN_MSG,1,NULL,0);
+	if(NULL != login_msg)
+	{
+		servermsg_add_send_msg(session->msg_pool,login_msg);
+	}
 	
 
 	return(0);
@@ -281,11 +282,14 @@ static void* handleclient_msg_pool_loop(void *arg)
 	int i = 0;
 	void * task = NULL;
 	server_session_t * client = (server_session_t *)arg;
+
+		
 	if(NULL == client || NULL == client->msg_pool)
 	{
 		dbg_printf("check the param \n");
 		return(NULL);
 	}
+
     while (1)
     {
         pthread_mutex_lock(&(client->msg_pool->mutex));
@@ -381,16 +385,13 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 	int		n;
 	int ret = -1;
 	char	sendline[MAXLINE], recvline[MAXLINE + 1];
-	volatile unsigned int rto_time_out = 0;
+
 
 	if(NULL == client)
 	{
 		dbg_printf("check the param \n");
 		return;
 	}
-
-	rto_init(rtoinfo);
-	rto_reget_rtovalue(rtoinfo,0);
 
 
 	msg_data_t * login_msg = client_creat_packet(client->reliable_queue,LOGIN_MSG,1,NULL,0);
@@ -403,6 +404,7 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 	while(1)
 	{
 
+
 		fd_set			rset;
 		struct timeval	tv;
 		FD_ZERO(&rset);
@@ -410,17 +412,18 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 		FD_SET(client->wakeup_fd, &rset);
 
 
-		if(0 == rtoinfo->rtto)
+		if(0 == rto_time_out)
 		{
+			dbg_printf("wait forever ! \n");
 			ret = select(maxfd+1, &rset, NULL, NULL,NULL);
 		}
 		else
 		{
 			tv.tv_sec = 0;
-			tv.tv_usec = rtoinfo->rtto * 1000;
+			tv.tv_usec = rto_time_out * 1000;
 			ret = select(maxfd+1, &rset, NULL, NULL, &tv);
 		}
-		rtoinfo->rtto= 0;  /*днЪБ*/
+		rto_time_out = 0;  /*днЪБ*/
 
 		if(-1 == ret)
 		{
@@ -433,24 +436,47 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 		else if(0 == ret )
 		{
 			dbg_printf("read time out \n");
+			rto_time_out = rto_get(rtoinfo) * 2;
 			continue;
 		}
 
-		if(FD_ISSET(client->wakeup_fd,&rset))continue;
+		if(FD_ISSET(client->wakeup_fd,&rset))
+		{
+			dbg_printf("just wake up ! \n");
+			udp_wakeup_clean(client->wakeup_fd);
+			rto_time_out = rto_get(rtoinfo);
+
+			dbg_printf("rto_time_out==%ld \n",rto_time_out);
+			continue;
+		}
 		
 
 
 		n = read(client->socket_fd, recvline, MAXLINE);
 		if(n < sizeof(msg_data_t))
 		{
-			dbg_printf("read time out \n");
+			dbg_printf("read time wrong \n");
 			continue;
 		}
 
-
-
 		msg_data_t * msg = (msg_data_t *)recvline;
-		msg->time_stamp = udp_get_curtime();
+		
+		if(1 == msg->is_reliable)
+		{
+			
+			unsigned int diff_time;
+			diff_time = udp_find_and_delpackets(client->reliable_queue,msg->packer_index);
+			if(diff_time > 0)
+			{
+				rto_push_sample_data(rtoinfo,diff_time);
+				
+			}
+			dbg_printf("the diff time is %u \n",diff_time);
+			
+		
+			
+		}
+			
 		if(LOGIN_ASK_MSG == msg->type)
 		{
 			msg_data_t * msg_recv = calloc(1,sizeof(unsigned char)*(n+1));
@@ -470,12 +496,14 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 int main(int argc, char **argv)
 {
 
+
 	struct sockaddr_in	servaddr;
 
 	if (argc != 2)
 		dbg_printf("usage: udpcli <IPaddress>\n");
 
 	session_client_init(argv[1]);
+
 	rtoinfo = rto_new();
 	if(NULL == rtoinfo)
 	{
@@ -489,3 +517,6 @@ int main(int argc, char **argv)
 
 	exit(0);
 }
+
+
+

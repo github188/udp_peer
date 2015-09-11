@@ -103,8 +103,9 @@ int servermsg_handle_login(server_session_t * session,void * data)
 	if(NULL != ask_msg)
 	{
 		ask_msg->type = LOGIN_ASK_MSG;
+		ask_msg->is_reliable = msg->is_reliable;
+		ask_msg->packer_index = msg->packer_index;
 		memmove(&ask_msg->dst_addr,&msg->src_addr,sizeof(struct sockaddr));
-		ask_msg->time_stamp_end = msg->time_stamp_end;
 		servermsg_add_send_msg(session->msg_pool,ask_msg);
 	}
 
@@ -123,13 +124,33 @@ int servermsg_handle_login_ask(server_session_t * session,void * data)
 		dbg_printf("check the param \n");
 		return(-1);
 	}
+
+	unsigned int delay = 0;
 	msg_data_t * msg = (msg_data_t *)data;
+
+	static int flag = 0;
+	flag += 1;
+
+	delay = 1000*200;
+	if(flag  >= 50)
+	delay = 1000*300;
+	
+	usleep(delay);
 	sendto(session->socket_fd, msg, sizeof(msg_data_t), 0, &msg->dst_addr, sizeof(struct sockaddr));
 
 	free(data);
 	data = NULL;
-	
 
+#if 0
+	if(flag >=  3)
+	{
+		while(1)
+		{
+			sleep(10);
+		}
+
+	}
+#endif
 
 	return(0);
 

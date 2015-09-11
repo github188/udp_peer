@@ -481,6 +481,7 @@ unsigned long  udp_get_curtime(void)
 		return(0);
 	}
 	return(time_value.tv_sec * 1000 + time_value.tv_usec / 1000);
+
 }
 
 
@@ -499,6 +500,18 @@ int udp_read_timeout(int fd,unsigned int mssec)
 	tv.tv_usec = mssec * 1000;
 	return(select(fd+1, &rset, NULL, NULL, &tv));
  
+}
+
+
+unsigned long udp_get_packet_index(unsigned long * value)
+{
+
+	unsigned long return_value = 0;
+	compare_and_swap(value,65535,0);
+	fetch_and_add(value,1);
+	return_value = *value;
+	return(return_value);
+	
 }
 
 

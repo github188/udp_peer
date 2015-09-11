@@ -24,14 +24,15 @@ typedef struct msg_data
 	unsigned char is_reliable;
 	struct sockaddr src_addr;
 	struct sockaddr dst_addr;
-	unsigned long time_stamp;
+	unsigned long packer_index;
 	unsigned int data_length;
 	char * data;
 }msg_data_t;
 
 typedef struct reliable_packet
 {
-	msg_data_t 	msg; 
+	msg_data_t 	msg;
+	unsigned long time_stamp_start;
 	unsigned long time_stamp_end;
 	unsigned long time_stamp_real_end;
 	unsigned int retry_times;
@@ -73,6 +74,7 @@ typedef struct server_session
 {
 	int socket_fd;
 	int wakeup_fd;
+	unsigned long packets_index;
 	struct sockaddr_in	servaddr;
 	server_pthread_msg_t * msg_pool;
 	packet_list_t	* reliable_queue;

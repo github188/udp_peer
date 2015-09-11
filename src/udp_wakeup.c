@@ -11,7 +11,7 @@
 
 int udp_wakeup_new(void)
 {
-	int evnet_fd = eventfd(0, 0);
+	int evnet_fd = eventfd(0, EFD_NONBLOCK);
 	if(evnet_fd < 0 )
 	{
 		dbg_printf("eventfd is fail  ! \n");
@@ -26,13 +26,14 @@ int udp_wakeup_new(void)
 int udp_wakeup_send(int fd)
 {
 
-	uint64_t value = 0;
+	uint64_t value = 1;
 	int nbytes = 0;
 	if(fd <= 0)
 	{
 		dbg_printf("check the param \n");
 		return(-1);
 	}
+
     while (1)
     {
         nbytes = write(fd, &value, sizeof(value));
@@ -75,10 +76,12 @@ int udp_wakeup_clean(int fd)
 		dbg_printf("check the param \n");
 		return(-1);
 	}
+	/*no block mode */
 	do
 	{
 		ret = read(fd,&value,sizeof(value));
 	}while(value !=0 && ret>0);
+
 
 	return(value);
 

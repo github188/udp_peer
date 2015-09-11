@@ -1,22 +1,20 @@
 #ifndef _udp_rto_h
 #define _udp_rto_h
 
+#define	DEFAULT_RTO_VALUE	(1*1000)
+#define  SAMPLE_NUM		(10)
 
 typedef  struct  rto_info
 {
-
-	unsigned int rtts;
-	unsigned int rttd;
-	unsigned int rttm;
-	unsigned int rtto;
-
+	int index;
+	unsigned int sample_data[SAMPLE_NUM];
 }rto_info_t;
 
 
 
 rto_info_t * rto_new(void);
-int  rto_reget_rtovalue(rto_info_t * rto_info,unsigned int rttm_value);
-int rto_init(rto_info_t * rto_info);
+int rto_push_sample_data(rto_info_t * info,unsigned int data);
+unsigned int rto_get(rto_info_t * info);
 
 
 
