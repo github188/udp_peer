@@ -106,7 +106,7 @@ unsigned long udp_find_and_delpackets(packet_list_t * list,unsigned long index)
 {
 
 
-	unsigned long diff_time = 0;
+	unsigned long real_end_time = 0;
 	if(NULL == list)
 	{
 		dbg_printf("check the param \n");
@@ -122,16 +122,16 @@ unsigned long udp_find_and_delpackets(packet_list_t * list,unsigned long index)
 			TAILQ_REMOVE(&list->packet_queue,node,links);
 			dbg_printf("i find it   %ld\n",node->packet->msg.packer_index);
 
-			diff_time = udp_get_curtime();
-			dbg_printf("the diff time is == %ld  node->packet->time_stamp_end===%ld \n",diff_time,node->packet->time_stamp_end);
+			real_end_time = udp_get_curtime();
+			dbg_printf("the real_end_time time is == %ld  node->packet->time_stamp_end===%ld \n",real_end_time,node->packet->time_stamp_end);
 			dbg_printf("node->packet->time_stamp_start===%ld \n",node->packet->time_stamp_start);
-			if(diff_time < node->packet->time_stamp_end )
+			if(real_end_time < node->packet->time_stamp_end )
 			{
-				diff_time = diff_time-node->packet->time_stamp_start;
+				real_end_time = real_end_time-node->packet->time_stamp_start;
 			}
 			else
 			{
-				diff_time = 0;
+				real_end_time = 0;
 			}
 			
 			if(NULL != node->packet->msg.data)
@@ -158,7 +158,7 @@ unsigned long udp_find_and_delpackets(packet_list_t * list,unsigned long index)
 	}
 	pthread_mutex_unlock(&list->mutex);
 
-	return(diff_time);
+	return(real_end_time);
 	
 }
 

@@ -26,6 +26,7 @@ typedef struct msg_data
 	struct sockaddr dst_addr;
 	unsigned long packer_index;
 	unsigned int data_length;
+	unsigned int retry_times;
 	char * data;
 }msg_data_t;
 
@@ -35,7 +36,7 @@ typedef struct reliable_packet
 	unsigned long time_stamp_start;
 	unsigned long time_stamp_end;
 	unsigned long time_stamp_real_end;
-	unsigned int retry_times;
+	
 }reliable_packet_t;
 
 

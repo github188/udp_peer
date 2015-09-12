@@ -152,6 +152,7 @@ msg_data_t * client_creat_packet(packet_list_t * list,msg_type_t type,char is_re
 		packet->msg.type = type;
 		packet->msg.data_length = length;
 		packet->msg.is_reliable =is_reliable; 
+		packet->msg.retry_times = 0;
 		memmove(&(packet->msg.src_addr),&clisent_addr,sizeof(struct sockaddr_in));
 		if(NULL != data && length != 0)
 		{
@@ -191,14 +192,16 @@ int clientmsg_handle_login(server_session_t * session,void * data)
 	char temp_data[1440];
 	int byte_lenrth = 0;
 	msg_data_t * msgdata = (msg_data_t * )data;
-	
-	msgdata->packer_index = udp_get_packet_index(&session->packets_index);
+
+	if(msgdata->retry_times == 0)
+		msgdata->packer_index = udp_get_packet_index(&session->packets_index);
+
+
 	if(msgdata->is_reliable)
 	{
 		reliable_packet_t * reliable = 	container_of(msgdata,reliable_packet_t,msg);
-		reliable->retry_times = 0;
 		reliable->time_stamp_start = udp_get_curtime();
-		reliable->time_stamp_end = reliable->time_stamp_start +rto_get(rtoinfo);
+		reliable->time_stamp_end = reliable->time_stamp_start +rto_time_out;
 	}
 
 	memmove(temp_data,msgdata,sizeof(msg_data_t));
@@ -210,7 +213,7 @@ int clientmsg_handle_login(server_session_t * session,void * data)
 	byte_lenrth = sizeof(msg_data_t) + msgdata->data_length;
 	write(session->socket_fd, temp_data, byte_lenrth);
 
-	if(0 == rto_time_out)
+	if(0 == session->reliable_queue->num_packets)
 	{
 		udp_wakeup_send(session->wakeup_fd);
 	}
@@ -372,14 +375,6 @@ static void* handleclient_msg_pool_loop(void *arg)
 
 
 
-
-
-
-/*
-思路:增加一个abort pipe，来激活select中的休眠，每次休眠完毕之后，如果暂时不需要再接收数据，设置很长的休眠时间 或者设置为-1，如果需要收数据时候，再重新设置
-
-
-*/
 void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr, socklen_t servlen)
 {
 	int		n;
@@ -397,7 +392,7 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 	msg_data_t * login_msg = client_creat_packet(client->reliable_queue,LOGIN_MSG,1,NULL,0);
 	if(NULL != login_msg)
 	{
-		servermsg_add_send_msg(session_client->msg_pool,login_msg);
+		servermsg_add_send_msg(client->msg_pool,login_msg);
 	}
 	
 	int maxfd = (client->socket_fd > client->wakeup_fd) ? (client->socket_fd) : (client->wakeup_fd);
@@ -412,7 +407,7 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 		FD_SET(client->wakeup_fd, &rset);
 
 
-		if(0 == rto_time_out)
+		if(0 == client->reliable_queue->num_packets)
 		{
 			dbg_printf("wait forever ! \n");
 			ret = select(maxfd+1, &rset, NULL, NULL,NULL);
@@ -423,7 +418,6 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 			tv.tv_usec = rto_time_out * 1000;
 			ret = select(maxfd+1, &rset, NULL, NULL, &tv);
 		}
-		rto_time_out = 0;  /*暂时*/
 
 		if(-1 == ret)
 		{
@@ -435,8 +429,31 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 		}
 		else if(0 == ret )
 		{
+
+			rto_time_out =  rto_time_out * 2;
 			dbg_printf("read time out \n");
-			rto_time_out = rto_get(rtoinfo) * 2;
+			
+			if(client->reliable_queue->num_packets > 0)
+			{
+				unsigned long time_samp = udp_get_curtime();
+				packet_node_t * node = NULL;
+				reliable_packet_t * return_packet = NULL;
+				pthread_mutex_lock(&client->reliable_queue->mutex);
+				TAILQ_FOREACH(node,&client->reliable_queue->packet_queue,links)
+				{
+					if(node->packet->time_stamp_end < time_samp)
+					{
+						node->packet->msg.retry_times += 1;
+						node->packet->msg.packer_index = udp_get_packet_index(&client->packets_index);
+						servermsg_add_send_msg(client->msg_pool,&node->packet->msg);	
+					}
+				}
+				pthread_mutex_unlock(&client->reliable_queue->mutex);
+			}
+
+	
+
+
 			continue;
 		}
 
@@ -444,6 +461,9 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 		{
 			dbg_printf("just wake up ! \n");
 			udp_wakeup_clean(client->wakeup_fd);
+		
+			
+			
 			rto_time_out = rto_get(rtoinfo);
 
 			dbg_printf("rto_time_out==%ld \n",rto_time_out);
@@ -473,10 +493,7 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 			}
 			dbg_printf("the diff time is %u \n",diff_time);
 			
-		
-			
 		}
-			
 		if(LOGIN_ASK_MSG == msg->type)
 		{
 			msg_data_t * msg_recv = calloc(1,sizeof(unsigned char)*(n+1));
@@ -484,6 +501,8 @@ void udp_client_run(server_session_t * client, const struct sockaddr *pservaddr,
 			servermsg_add_handle_msg(session_client->msg_pool,msg_recv);
 			
 		}
+			
+
 
 
 	}

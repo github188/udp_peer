@@ -137,8 +137,13 @@ int servermsg_add_send_msg(server_pthread_msg_t *server_msg, void *task)
     }
     else
     {
-        volatile unsigned int *task_num = &server->send_msg_num;
-        fetch_and_add(task_num, 1);
+    	msg_data_t * msg = (msg_data_t*)(task);
+    	if(msg->retry_times  == 0)
+    	{
+			volatile unsigned int *task_num = &server->send_msg_num;
+        	fetch_and_add(task_num, 1);
+		}
+
     }
     return pthread_cond_signal(&(server->cond));
 }

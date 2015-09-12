@@ -61,7 +61,7 @@ unsigned int rto_get(rto_info_t * info)
 		sum += info->sample_data[i];
 	}
 
-	return((unsigned int)(sum/SAMPLE_NUM));
+	return(2*((unsigned int)(sum/SAMPLE_NUM)));
 }
 
 
